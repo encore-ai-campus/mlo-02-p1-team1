@@ -1,0 +1,389 @@
+# 스포링 작업 상태
+
+## 최신 작업 — 원본 CSV 이름 단일 관리 (2026-09-17, 12차)
+
+같은 파일 이름이 다섯 모듈에 따로 적혀 있던 것을 `app/common/sources.py` 한 곳으로 모았다.
+
+- 이전 상태: `programs/models.py`의 `PROGRAM_FILE`, `dashboard/models.py`의 `USAGE_FILE`, `facilities/models.py`의 `FACILITY_FILE`, `facilities/transit.py`의 `TRANSIT_FILE`, 그리고 `Batch/seoul_csv_batch.py`의 `SOURCE_SPECS`가 서로를 모른 채 같은 이름을 반복했다. 쓰는 쪽과 읽는 쪽이 어긋나면 예외가 아니라 **빈 화면**으로만 드러난다.
+- 레지스트리에는 **원본 이름만** 적는다. 서비스 파일(`_seoul.csv`)과 직전 실행 보관본(`_seoul_temp.csv`)은 배치의 명명 규칙대로 파생되므로 두 half가 어긋날 수 없다. `SourceSpec` 자체를 옮겼기 때문에 배치 쪽 속성 이름과 기존 테스트는 그대로다.
+- Django를 import하지 않는다. `manage.py`가 `django.setup()` 이전에 배치를 부르므로 레지스트리가 django에 의존하면 기동이 깨진다. `app/__init__.py`·`app/common/__init__.py`가 비어 있음을 확인하고 실제로 setup 없이 import되는 것까지 검증했다.
+- 배치에 상대 import가 생겨 `python seoul_csv_batch.py` 직접 실행은 더 이상 되지 않는다. `python -m app.Batch.seoul_csv_batch`로 실행하며 README에 적었다.
+- 원본 이름은 **한글을 유지**했다. 작업 트리에 커밋되지 않은 영문 전환(`public_sports_program.csv` 등)이 있었으나 `data/` 리네이밍이 끝나지 않아 8개 테스트가 실패하고 화면이 비어 보였다. 전환은 이제 `sources.py` 네 줄 수정으로 끝난다.
+- 변경 파일: `app/common/sources.py`(신규), `app/common/test_sources.py`(신규), `app/Batch/seoul_csv_batch.py`, `app/{programs,dashboard,facilities}/models.py`, `app/facilities/transit.py`, `main/README.md`.
+- 검증: 테스트 **182개**(신규 3개) 통과, `check`·`compileall` 정상, `-m` 실행 확인. 영문 이름으로 잠시 바꿔 8개 실패가 전부 "파일 없음" 계열임을 확인한 뒤 되돌렸다 — 리팩터링 자체는 이름 선택과 무관하게 건전하다.
+
+## 최신 작업 — 계획서 거절 안내 + 지도 자산 로컬화 (2026-09-17, 11차)
+
+`POST /dashboard/plan/preview` 400의 원인을 특정하고, 그 원인이 화면에 전달되지 않던 문제와 지도의 외부 CDN 의존을 함께 고쳤다.
+
+- 원인 규명: 로그의 `400 126`에서 응답 **126바이트**가 단서. `JsonResponse`는 한글을 `\uXXXX`로 이스케이프하므로 메시지마다 크기가 고유하다. 발생 가능한 폼 에러 조합을 전수 계산해 126을 만드는 것이 `end`의 `종료일은 시작일보다 빠를 수 없습니다.` 하나임을 확인했고(다른 후보 `fee`+`end` 동시 required는 `end`가 `required=False`라 불가), 문제 조건(15개 구·태권도) 그대로 재현해 날짜만 바로잡으면 200임을 확인했다. **선택한 구 개수와는 무관하다.**
+- 구멍 ①: `#plan-error`는 패널 최상단, `계획서 완성하기` 버튼은 최하단이라 거절 문구가 화면 밖에 그려졌다 → `failure()`가 알림으로 스크롤하고 포커스를 옮긴다. `requestAnimationFrame`이 아닌 `setTimeout`을 쓴다. 백그라운드 탭은 프레임 콜백을 억제하고, 필요한 것은 제출 핸들러의 `finally`가 `inert`를 푼 **다음 태스크**뿐이다.
+- 구멍 ②: 두 날짜 입력에 상호 경계가 없어 역전 입력이 서버까지 갔다 → 시작일이 종료일의 `min`을, 종료일이 시작일의 `max`를 설정한다. `reset`은 값이 지워진 뒤 다시 계산한다.
+- 구멍 ③: `region-map.js`가 ECharts와 행정경계 GeoJSON을 `cdn.jsdelivr.net`에서 실시간으로 받고 있었다. 폐쇄망에서 지도 전체가 죽고, 경계는 `@master` 참조라 이 저장소의 커밋 없이 모양이 바뀔 수 있었다 → 세 파일을 `static/vendor/`에 포함하고, 폴더는 스크립트 자기 `src`에서 유도해 `STATIC_URL` 변경을 따라가게 했다.
+- 변경 파일: `static/program-planner.js`, `static/region-map.js`, `templates/dashboard/_planner.html`, `app/common/test_staticfiles.py`, `app/dashboard/tests.py`, `README.md`. 신규 자산 `static/vendor/echarts.min.js`·`skorea_provinces_geo_simple.json`·`skorea_municipalities_geo_simple.json`.
+- 검증: 테스트 **179개**(신규 4개) 통과, `manage.py check`·`compileall`·`node --check`·`node test_region_selection.js` 정상. 실제 브라우저에서 외부 요청 **0건**·vendor 4개만 로드·지도 캔버스 렌더링을 확인했고, 위저드를 끝까지 태워 역전 날짜 제출 시 문구가 보이며 포커스가 알림으로 이동함을 확인했다(스크롤 726→0).
+
+## 최신 작업 — [SG001] 시설 현황 데이터 예외처리 보완 (2026-09-15, 10차)
+
+인접 대중교통이 비어 보이는 네 가지 사유를 구분하고, 파이썬 쪽 구멍 둘을 막았다. [결정 기록](DECISIONS.md) 참조.
+
+- 구멍 ①: 1.6M행 적재 중 `OSError`·`UnicodeError`가 그대로 올라가 시설 상세가 500이 될 수 있었다 → 색인이 `None`을 돌려주고 화면이 문구로 알린다.
+- 구멍 ②: 원본 열 이름이 바뀌면 전 시설이 '연결된 정보 없음'으로 보이던 오진 → `columns_present()`로 읽기 전 확인.
+- 사유 코드 `source` / `no_position` / `not_public` / `not_listed`를 결과에 담아 화면이 원인별로 다르게 안내한다.
+- 좌표가 없으면 색인을 만들지 않고 즉시 반환(11,568건이 불필요한 1.6M행 적재를 유발하던 문제).
+- 변경 파일: `app/common/data.py`, `app/facilities/transit.py`, `templates/facilities/_workspace.html`, `app/facilities/tests.py`. 모두 `[SG001]` 주석 표기.
+- 검증: 테스트 **121개**(신규 3개) 중 내 변경분 전부 통과. 실제 화면에서 네 경우 모두 의도한 문구 확인.
+
+## 최신 작업 — 정책 아이콘 통일 + 시설 사진 10종 (2026-09-15, 8차)
+
+- 상단 `주요 정책 보기` 아이콘 `info` → `program`. 다이얼로그 제목 아이콘과 일치.
+- 사진을 `image/center/center0~9.jpg`로 분배. 식별자의 **마지막 숫자**로 고르므로 같은 시설·강좌는 항상 같은 사진을 쓴다. 신규 `{% centre_photo %}` 태그(`app/templatetags/assets.py`).
+- 적용 위치: 시설 상세 `.detail-photo`, 프로그램 TOP 3 카드 `.facility-art`. 이전 `image/center.jpg`는 삭제돼 둘 다 404 상태였다.
+- 검증: 이미지 10종 모두 200, `facility-0→center0`·`facility-3→center3`·`facility-7→center7`·`facility-125→center5`, 프로그램 카드 3장이 각각 center9·center0·center4, 헤더와 다이얼로그 아이콘 `#i-program` 일치.
+- 참고: 머지 이후 `templates/programs/_results.html`은 화면에 렌더링되지 않는다(`programs/index.html`이 포함하지 않음). `render_screen`의 htmx 분기로만 남아 있다.
+
+## 최신 작업 — 시설 목록 스크롤 유지 (2026-09-15, 7차)
+
+시설을 클릭하면 목록의 내부 스크롤이 맨 위로 돌아가던 문제를 고쳤다. [결정 기록](DECISIONS.md) 참조.
+
+- 워크스페이스 스왑으로 표가 새로 그려지면서 자체 스크롤(`max-height:610px`)이 초기화되던 것.
+- `htmx:beforeRequest`에서 `scrollTop`을 기록하고 `htmx:afterSettle`에서 복원. 옵트인 방식(`data-keep-scroll` + `data-scroll-region`).
+- 페이지 이동은 제외했다. 행이 전부 바뀌므로 맨 위가 맞다.
+- 변경 파일: `static/interactions.js`, `templates/facilities/_workspace.html`. 회귀 테스트 1개 추가.
+- 검증: 목록 20행 전부 opt-in, 스크롤 영역 표식 1개, 페이지 링크는 미적용, 스왑 조각에도 표식과 선택 강조가 함께 실려옴.
+
+## 최신 작업 — 메뉴 이동 스플래시 (2026-09-15, 6차)
+
+메뉴 전환이 느린 동안 `image/splash.png`를 덮어 보여준다. [결정 기록](DECISIONS.md) 참조.
+
+- 대상: 좌측 메뉴 3개와 상단 브랜드 링크. 현재 열린 메뉴와 새 탭 클릭은 제외.
+- 150ms 지연 후 표시(워밍 상태의 깜빡임 방지), `pageshow`에서 해제(뒤로 가기 bfcache 포함), 60초 안전 타임아웃.
+- 접근성: `body[aria-busy]` 토글, 안내 문구를 표시 시점에 주입해 `role="status"`가 낭독되게 함, `prefers-reduced-motion`에서 진행 바 애니메이션 정지.
+- 그림은 `image/logo/logo.png`(헤더에서 이미 캐시됨). 표시 폭 `min(420px,72vw)`.
+- 신규 `app/templatetags/assets.py`의 `{% asset %}` — 정적 URL에 파일 수정시각을 붙인다. 수동 토큰(`?v=20260915-...`)을 안 바꿔 옛 CSS가 캐시되는 바람에 스플래시가 처음에 뜨지 않았다. `app.css`·`fonts.css`·테마·`interactions.js`·`region-map.js`에 적용.
+- 변경 파일: `templates/base.html`, `templates/{dashboard,programs}/index.html`, `static/app.css`, `static/interactions.js`, `app/templatetags/assets.py`. 회귀 테스트 3개 추가.
+- 검증: 이미지 200·3,109b·원본 동일, 네 화면 모두 오버레이가 `hidden`으로 실려오고, JS 조건 7종·CSS 3종 확인.
+- 냉시동 실측: 대시보드 5.2초 / 프로그램 9.9초 / 시설 3.2초. 스플래시는 이 시간을 줄이지 않는다 — 없애려면 기동 시 워밍업이 필요하다.
+
+## 최신 작업 — 정책 다이얼로그 고정 프레임 (2026-09-15, 5차)
+
+다이얼로그 헤더·푸터를 고정하고 `.policy-content`만 스크롤하도록 바꿨다. [결정 기록](DECISIONS.md) 참조.
+
+```
+┌─ policy-head   고정 (제목·닫기)
+│  policy-content  ← 여기만 스크롤
+└─ policy-footer 고정 (원문 링크)
+```
+
+- `.policy-dialog` `overflow:auto` → `hidden`, `[open]`일 때만 `display:flex` 세로 배치.
+- 스왑 대상 `#policy-dialog-body`도 flex 체인에 포함(높이 전달이 끊기면 스크롤이 안 생김).
+- 헤더의 `position:sticky` 제거. 본문에 `overscroll-behavior:contain` 추가.
+- 모든 규칙을 `.policy-dialog` 아래로 한정해 `/policies` 전체 페이지는 영향 없음.
+- 검증: 조각 구조 head→content→footer 순서·항목 10건·닫기 버튼 정상, CSS 규칙 7종 확인, `/policies` 200.
+
+## 최신 작업 — 제목 안내 툴팁 통일 (2026-09-15, 4차)
+
+대시보드·시설 화면의 제목 옆 설명을 프로그램 화면과 같은 느낌표 툴팁으로 맞췄다. [결정 기록](DECISIONS.md) 참조.
+
+| 화면 | 제목 | 툴팁 |
+|---|---|---|
+| 대시보드 | 전국/○○ 시설 이용현황 | 스포츠강좌이용권 이용현황 자료에서 시설·강좌·신청인원을 확인합니다. |
+| 프로그램 | 프로그램 분석 | 지역과 종목별로 등록 강좌를 조회하고 비교합니다. |
+| 시설 | 시설 현황 | 전국체육시설현황 자료에서 공공·민간 시설 정보와 인접 대중교통을 확인합니다. |
+
+- 신규 `templates/components/heading_help.html`. 프로그램 화면의 기존 인라인 마크업도 이 컴포넌트로 통일.
+- 대시보드 제목은 htmx OOB로 갱신되므로 껍데기와 조각 양쪽에 적용. 지역을 바꿔도 느낌표와 툴팁이 유지되는 것을 확인했다.
+- 검증: 실제 화면 4종에서 `heading-help` 버튼 1개·`#i-alert` 1회·`aria-label`·툴팁 문구가 모두 정상이고 기존 `<p>` 설명은 사라졌다. 헤딩 회귀 테스트 3개 추가.
+
+## 최신 작업 — 엑셀 내보내기 한도 안내 (2026-09-15, 3차)
+
+한도 초과 시 버튼이 사라지던 것을 **비활성 버튼 + 느낌표 힌트**로 바꿨다. [결정 기록](DECISIONS.md) 참조.
+
+- 신규 `templates/components/export_button.html` — 프로그램·시설 공용.
+- 한도 이하: 기존과 같은 링크 버튼. 한도 초과: `disabled` 버튼 + 옆의 도움 버튼에 사유 툴팁(비활성 버튼은 포커스를 못 받아 툴팁을 달 수 없음).
+- 실측 확인: 프로그램 295,033건·시설 104,136건에서 비활성+힌트, 강남구 8,326건·수영장 504건에서 정상 링크, URL 직접 호출은 여전히 400.
+
+### 5만 행 한도의 성격
+
+라이브러리 제약이 아니라 응답시간 가드다. XLSX 한계는 1,048,576행이고 openpyxl 메모리는 선형이다.
+
+| 행수 | 소요 | 파일 | 메모리 |
+|---|---|---|---|
+| 50,000 | 19s | 4.3MB | +5MB |
+| 100,000 | 39s | 8.6MB | +9MB |
+| 200,000 | 78s | 17.1MB | +17MB |
+| 295,033 | 115s | 25.4MB | +23MB |
+
+한도를 올리려면 WSGI 타임아웃을 그만큼 올려야 한다. `EXPORT_ROW_LIMIT` 한 줄로 조정된다.
+
+## 최신 작업 — 지역 지도 공용 컴포넌트 (2026-09-15, 2차)
+
+프로그램 화면에만 있던 지도를 공용화하고 대시보드에 붙였다. [결정 기록](DECISIONS.md) 참조.
+
+| 파일 | 역할 |
+|---|---|
+| `static/region-map.js` (신규) | 그리기 전담. 화면별 분기 없음. ECharts·GeoJSON 로딩, 별칭 정규화, 자동 확대, 서울 드릴다운, 재그리기 |
+| `templates/components/region_map.html` (신규) | 선언 전담. `data-*` 설정과 `json_script` 데이터 블록 |
+| `static/app.css` | `.region-map*` 공용 스타일 (프로그램 인라인 `<style>`에서 이동) |
+
+- 화면별 설정: 프로그램 `region_click="drilldown"` / 대시보드 `region_click="emit"`.
+- 클릭은 `regionmap:select` 이벤트로 나가고, 프로그램은 검색 폼 제출·대시보드는 지역 필터로 받는다.
+- 대시보드 집계 추가: `region_distribution`(시도 18개), `seoul_district_distribution`(자치구 25개). 신청인원 기준.
+- 라이브러리 태그는 껍데기에, 지도는 조각에. 대시보드 htmx 스왑 시 ECharts를 재다운로드하지 않고 새 숫자로만 다시 그린다.
+- 검증: 테스트 **100개 통과**(기존 96 + 공용 컴포넌트 4), Django check·`node --check` 정상, 서버 예외 0건. 프로그램 시도 11·자치구 23건, 대시보드 시도 18·자치구 25건이 모두 유효 JSON으로 출력되고 `region-map.js`는 화면당 1회만 로드. 시설 화면에는 스크립트가 실리지 않는다.
+
+## 최신 작업 — 머지 후 프로그램 지도 복구 (2026-09-15)
+
+병합 뒤 `/programs`의 ECharts 지도가 표시되지 않던 문제를 고쳤다. [결정 기록](DECISIONS.md) 참조.
+
+| 증상 | 원인 | 수정 |
+|---|---|---|
+| 지도가 "불러오는 중"에서 멈춤 | `seoul_district_distribution` 미전달 → `JSON.parse('""').map()` TypeError | 뷰 컨텍스트 복구 |
+| 시군구 select 비활성 | `region_district_map` 미전달 | 뷰 컨텍스트 복구 |
+| 검색어 입력 시 500 | namedtuple에 dict 접근(`item['name']`) | 속성 접근으로 통일 |
+| 예산 조건 무시 | `SEARCH_KEYS`에 예산 키 없음 | 키 추가 + 페이지·엑셀 공통 적용 |
+
+- 변경 파일: `app/programs/{services,views,tests}.py`, `app/common/tests.py`, `templates/programs/index.html`.
+- 복구한 템플릿 요소: 엑셀 5만 행 초과 안내(서버 거절 로직은 살아 있었음), 적재 출처·중복 제거 문구. "선두 최대 15,000행 기준" → "중복 제거 후 강좌 단위".
+- 검증: 테스트 **96개 통과**, Django check 정상, 서버 예외 0건. 지도 데이터 3종이 모두 유효한 JSON(시도 11 / 서울 자치구 23 / 지역-시군구 맵 11)으로 출력되고, ECharts·GeoJSON CDN 3개 모두 200. 대시보드·시설·정책 화면 회귀 없음.
+
+### 머지로 되돌아갔으나 복구하지 않은 것
+
+프로그램 화면에 한해 팀원 버전이 채택된 부분이다. 필요하면 별도로 결정해야 한다.
+
+- htmx 부분 렌더링 → 전체 새로고침 + `_scroll` 스크롤 복원(대시보드·시설은 htmx 유지).
+- TOP 3 카드의 `center.jpg` 대표 이미지 → 건물 아이콘 자리표시자.
+- 검색 패널의 시설유형·대상 필드, 정렬의 도보/모집인원 선택지, 요약의 정류장 도보 중앙값 타일. `sort=walk`·`capacity`와 `facility_type`·`target`은 URL로는 여전히 동작한다.
+
+## 최신 작업 — 대표 이미지 연결 (2026-09-14, 13차)
+
+사진 자리표시자 두 곳에 `image/center.jpg`(660×320, 57KB)를 연결했다. [결정 기록](DECISIONS.md) 참조.
+
+| 위치 | 화면 | 캡션 |
+|---|---|---|
+| `.facility-art` | 프로그램 TOP 3 카드 | 대표 이미지 |
+| `.detail-photo` | 시설 상세 | 대표 이미지 · 개별 시설 사진은 자료에 없습니다 |
+
+- `STATICFILES_DIRS`에 접두사 항목을 더해 저장소 루트의 `image/`를 `/static/image/`로 서빙한다. 파일을 옮기지 않았다.
+- 조각 템플릿 두 개에 `{% load static %}` 추가(htmx 스왑 시 단독 렌더링되므로 필요).
+- 한 장을 공용으로 쓰므로 이미지 위 반투명 띠로 대표 이미지임을 명시하고 `alt=""`로 장식 처리했다.
+- 시설 목록 썸네일은 아이콘 유지(같은 사진 20회 반복은 무의미).
+- 검증: 테스트 **89개 통과**, Django check 정상. `/static/image/center.jpg` 200·57,362b·image/jpeg·원본 동일. 프로그램 3개·시설 상세 1개 렌더링, 대시보드·정책·시설 목록 0개, htmx 조각에서도 경로 정상.
+
+## 최신 작업 — 시설 검색 조건 좌측 배치 (2026-09-14, 12차)
+
+시설 화면 레이아웃을 프로그램 화면과 통일했다. [결정 기록](DECISIONS.md) 참조.
+
+- 검색 조건이 상단 가로 → **좌측 세로 패널**. 프로그램 화면의 `.search-panel`을 그대로 재사용해 스티키·간격·반응형이 자동으로 따라온다.
+- 필터 순서: 지역 / 종목·시설 유형 / 시설구분 / 운영상태 / 보유주체 / 시설명·주소, 그 아래 조회·초기화 버튼과 안내 문구.
+- 신규 `.facility-shell` 그리드(216px + 나머지). 1440 이하 240px, 1300 이하 190px, 720 이하 1열 — 프로그램 화면과 같은 분기.
+- 1500px 이하에서는 시설 상세를 목록 아래로 내린다. 좌측 패널까지 3열이 되면 목록 표가 가로 스크롤에 갇힌다.
+- 삭제: `.facility-filters` 가로 flex 규칙과 720px 전용 2열 분기(이제 `.search-panel`이 담당).
+- 검증: 테스트 **88개 통과**, Django check 정상. 실제 화면에서 폼이 스왑 영역 밖에 있음, div 균형 0, 필터 조합(공공 34,806 / 공공+수영장 504 / 대한체육회 25 / 전체 상태 139,124) 정상, htmx 스왑과 다른 세 화면 회귀 없음.
+
+## 최신 작업 — 시설 상세에 인접 대중교통 (2026-09-14, 11차)
+
+시설명 클릭 시 나오는 상세 패널의 `연결 프로그램`을 `인접 대중교통`으로 교체했다. [결정 기록](DECISIONS.md) 참조.
+
+| 매칭 키 후보 | 일치율 | 채택 |
+|---|---|---|
+| 코드+이름+주소 | 16.2% | ✘ 주소 체계가 다름(도로명 vs 지번) |
+| 코드+이름 (3부) | 78.5% | ✘ 교통자료 쪽 동명 4,978건 |
+| **시설명+좌표(6자리)** | **30,806개** | **✔** |
+
+- 커버리지: 시설 30,971행(전체 22.3%, **공공 86.7%**). 붙는 행은 사실상 전부 공공(30,944/30,971).
+- 정렬은 직선거리 기준. 도보 시간·거리는 53.9%가 결측이고 직선거리는 100% 존재한다. 도보 시간은 있는 행에만 병기하고 추정하지 않는다.
+- 시설당 정류장 중앙값 24개·최대 1,120개 → 가까운 10개만 유지, 전체 개수 병기.
+- 색인은 첫 상세 조회 때 지연 구축(12.9초), 이후 0.07초. 목록 화면은 교통 자료를 읽지 않는다.
+- 라우트 `export/facility-programs.xlsx` → `export/facility-transit.xlsx`(12열).
+- 신규: `app/facilities/transit.py`. 제거: `facility_programs`, `programs.models.programs_for_facility`와 그 색인.
+- 검증: 테스트 **88개 통과**(기존 80 + 교통 8), Django check 정상. 실제 자료로 상세 패널에 정류장 40개 중 가까운 10개, 최근접 112m 확인. 엑셀 10행. 대시보드·프로그램·정책·시설 엑셀 회귀 없음.
+
+## 최신 작업 — 시설 원본 교체 (2026-09-14, 10차)
+
+시설 화면 원본을 `전국공공체육시설 데이터.csv` → **`전국체육시설현황 데이터.csv`** 로 교체했다. [결정 기록](DECISIONS.md) 참조.
+
+| | 구파일 | 신파일 |
+|---|---|---|
+| 조회 대상 | 35,573 | **139,124** (공공 35,673 + 신고 102,881 + 등록 570) |
+| 운영상태 | `00`/`99` 의미 미확인 | 정상운영 104,136 / **폐업 34,480** |
+| 프로그램 연결 | 286 / 90.3% | **288 / 90.7%** |
+| 신규 항목 | — | 시설 전화·운영형태·실내외 |
+| 보유주체 | 20종 | 6종 (부처 값 소멸) |
+
+- 조인 키를 `FCLTY_MANAGE_*`로 변경. 평범한 `SIGNGU_CD`는 시 단위이거나 주소와 불일치해(7,503건) 커버리지가 70.9%로 떨어진다.
+- 필터 6개: 지역 / 종목·시설 유형 / **시설구분** / **운영상태** / 보유주체 / 시설 검색. 운영상태는 `정상운영` 기본값이며 select에 선택 표시된다.
+- 엑셀 20열로 확장(시설구분·운영상태·운영형태·실내외 추가).
+- 변경 파일: `app/facilities/{models,services,views,tests}.py`, `templates/facilities/{index,_workspace}.html`.
+- 검증: 테스트 **83개 통과**(기존 74 + 시설 9), Django check 정상. 로드 2.6초. 실제 자료로 기본 104,136 / 전체 139,124 / 폐업 34,480 / 공공 34,806 / 신고 68,768 / 공공+수영장 504 / 대한체육회 25건, 시설 상세 연결 강좌 256건 확인. 대시보드·프로그램·정책 화면 회귀 없음.
+- 남은 한계: 도로명 정보가 없어 프로그램 연결이 불가능한 시설 33,365건(24%). 보유주체 결측 98,031건(민간 시설엔 개념 자체가 없음). 수용인원 결측 98.9%.
+
+## 최신 작업 — 크롤러 공통화 + BeautifulSoup 전환 (2026-09-14, 9차)
+
+- 이동: `app/policies/crawler.py` → **`app/common/crawler.py`**. 특정 사이트를 모르는 범용 목록 크롤러로, 소스 매핑만 받는다.
+- 파서: 표준 `HTMLParser` → **beautifulsoup4 4.15.0**(백엔드 `html.parser`). `requirements.txt`에 추가.
+- API: `list_url` / `fetch` / `parse_links` / `crawl`. 깊이 추적 상태 기계는 bs4가 중첩을 처리하므로 삭제.
+- 테스트 재배치: 크롤러 11개는 `app/common/tests.py`, 캐시·뷰 10개는 `app/policies/tests.py`.
+- `app/policies/`는 `models·services·views·urls·tests`만 남아 다른 기능 모듈과 같은 형태가 됐다.
+- 계약 불변: 예외 없음, 타 호스트 링크 폐기, 응답 크기 상한, 성공 15분·실패 60초 캐시, 팝업 열 때만 읽기.
+- 검증: 테스트 **74개 통과**, Django check 정상. 실제 문체부 사이트 10건 수집 0.26초. 팝업 조각 3.0KB(크롬 없음, 10건, 닫기 버튼), 전체 페이지 폴백 200, 기존 화면 4개·htmx 스왑·뒤로 가기 복원 모두 회귀 없음.
+
+## 최신 작업 — 체육정책 크롤링 팝업 (2026-09-14, 8차)
+
+상단 헤더에 `체육정책` 버튼을 추가하고, 문화체육관광부 체육정책 목록 최신 10건을 팝업으로 보여준다. [결정 기록](DECISIONS.md) 참조.
+
+- 원본: `https://www.mcst.go.kr/site/s_policy/dept/deptList.jsp?pType=07`의 `table.board` > `td.tit_wrap` > `a`에서 `title`과 `href`를 읽고, 기준 URL과 결합한다.
+- 설정: 주소·마크업 훅·건수·타임아웃·캐시 시간이 전부 `settings.POLICY_SOURCE`에 있다. 코드에는 하드코딩된 주소가 없다.
+- 신규 파일: `app/policies/{__init__,crawler,models,services,views,urls,tests}.py`, `templates/policies/{index,_list}.html`.
+- 변경 파일: `main/settings.py`, `app/urls.py`, `templates/base.html`, `static/{app.css,interactions.js}`.
+- 의존성 추가 없음. `urllib.request` + `html.parser`만 사용한다.
+- 캐시: 성공 15분, 실패 60초. 팝업을 열 때만 읽으며 다른 화면 진입 시 외부 요청이 없다.
+- 검증: 테스트 **72개 통과**(기존 54 + 정책 18), Django check 정상. 실제 문체부 사이트에서 10건 수집 0.3초, 2회차 캐시 0.0초. 팝업 응답 4.2KB에 페이지 크롬 없음, 세 화면 모두 버튼 노출, 무JS 전체 페이지 폴백 동작 확인.
+- 미실행: 브라우저 확장이 없어 실제 모달 열림·Esc 닫기·백드롭 클릭은 육안 확인하지 못했다. 서버 응답과 마크업까지 검증했다.
+
+## 최신 작업 — 목록 보유주체 칸 정정 (2026-09-14, 7차)
+
+사용자가 "목록에서 보유주체가 국민체육센터로 나온다"고 지적해 확인한 결과, 서로 다른 두 열을 한 칸에 섞어 놓았다. [결정 기록](DECISIONS.md) 참조.
+
+- 목록 `보유주체` 칸이 국민체육센터 시설 **147건**에서 실제 보유주체를 가리고 있었다. 대한체육회 25/25, 국민체육진흥공단 56/60, 법무부 11/15.
+- 수정: 보유주체는 항상 `POSESN_MBY_NM`, 국민체육센터 여부는 `<small>` 보조 줄로 병기. 상세 패널·엑셀은 원래부터 분리돼 있어 변경 없음.
+- 목록 헤더 `업종` → `종목·시설 유형`으로 필터 라벨과 통일.
+- 시설 링크가 `facilityId`를 두 번 붙이던 문제도 함께 수정(`filter_query` 신설).
+- 검증: 테스트 **54개 통과**. 실제 자료로 법무부 15건·대한체육회 25건 모두 보유주체 칸에 기관명이 뜨고 국민체육센터가 보조 줄로 붙는 것, 시설 링크의 `facilityId`가 정확히 1회인 것을 확인.
+
+## 최신 작업 — 시설 보유주체 필터 (2026-09-14, 6차)
+
+시설 필터가 `지역 / 종목·시설 유형 / 보유주체 / 시설 검색` 네 개가 됐다. [결정 기록](DECISIONS.md) 참조.
+
+- `POSESN_MBY_NM` 20종. 지방자치단체 35,139건(98.8%) 외에 국민체육진흥공단 60·대한체육회 25·행정안전부 24 등 434건을 찾을 수 있게 됐다. 값 없는 246건은 선택지에서 제외.
+- 페이지 이동·시설 선택·엑셀 내보내기가 모두 같은 조건을 유지한다.
+- 필터 폼에 `flex-wrap`과 검색칸 `min-width:260px`를 적용해 4칸에서도 눌리지 않게 했다.
+- 변경 파일: `app/facilities/{services,views,tests}.py`, `templates/facilities/index.html`, `static/app.css`.
+- 검증: 테스트 **52개 통과**, Django check 정상. 실제 자료로 전체 35,573 / 지방자치단체 35,139 / 국민체육진흥공단 60 / 대한체육회 25 / 체육관+국민체육진흥공단 11건 확인. 엑셀 25행 전부 보유주체가 대한체육회. 2페이지 링크에 `owner` 파라미터 유지 확인.
+
+## 최신 작업 — 시설 화면 필터 검토 (2026-09-14, 5차)
+
+시설 화면에 지역·시설유형·대상·종목 필터를 넣을 수 있는지 검토하고, 라벨만 정리했다. [결정 기록](DECISIONS.md) 참조.
+
+- `업종` 라벨을 `종목·시설 유형`으로 변경. `INDUTY_NM` 27종(수영장·테니스장·축구장·궁도장…)이 시설 단위의 종목 역할을 한다는 점을 드러낸다.
+- 대상·종목 필터는 추가하지 않는다. 시설 자료에 두 열이 없고, 프로그램 연결은 300건 / 35,573건(0.8%)이라 나머지가 "판정 불가"인데 사라진다. 대상은 자유 텍스트 1,170종(`청소년` 포함 표기만 145종), 종목은 347종이다.
+- 세부 유형 종속 select를 구현했다가 사용자 판단으로 제거했다. `FCLTY_TY_NM`은 목록·상세·엑셀에서 값으로는 계속 보인다.
+- 최종 시설 필터: 지역 / 종목·시설 유형 / 시설 검색.
+- 변경 파일: `app/facilities/views.py`(라벨 외 로직 원복), `templates/facilities/index.html`.
+- 검증: 테스트 **48개 통과**, Django check·compileall 정상. 실제 자료로 전체 35,573건, 체육관 1,506건, `facility_type` 파라미터가 응답 어디에도 남지 않음을 확인. htmx 스왑과 뒤로 가기 복원도 재확인.
+
+## 최신 작업 — 뒤로 가기 히스토리 복원 수정 (2026-09-14, 4차)
+
+뒤로 가기를 누르면 화면이 컴포넌트 하나만 남던 문제를 고쳤다.
+
+- 원인: htmx는 히스토리를 복원할 때 URL을 다시 요청하며 그 요청에도 `HX-Request: true`가 붙는다. 서버가 이를 일반 스왑으로 착각해 조각을 돌려줬고, htmx가 그 조각을 `body` 전체에 넣었다.
+- 수정: `is_htmx()`가 `HX-History-Restore-Request` 헤더를 함께 본다. 복원 요청은 전체 페이지로 답한다(`app/common/partials.py`).
+- 검증: 복원 응답이 일반 이동과 **바이트 단위로 동일**함을 세 화면 모두 확인. OOB 갱신도 복원 응답에는 나가지 않는다.
+- 테스트 **48개 통과**(기존 46 + 히스토리 복원 2).
+
+## 최신 작업 — htmx 부분 렌더링 (2026-09-14, 3차)
+
+페이지 이동·필터·시설 선택이 전체 문서를 다시 그리지 않고 해당 영역만 교체한다. 스크롤 위치가 유지된다. 근거와 기각한 대안은 [결정 기록](DECISIONS.md) 참조.
+
+| 화면 | 교체 영역 | 트리거 |
+|---|---|---|
+| 대시보드 | `#dashboard-body` (+ 제목 OOB) | 지역 선택, 지역 바로가기 |
+| 프로그램 | `#program-results` | 검색 폼, 페이지 이동 |
+| 시설 | `#facility-workspace` | 검색 폼, 페이지 이동, 시설 선택 |
+
+- 라이브러리: `main/static/vendor/htmx.min.js` (2.0.4, 50KB). CDN 미사용. 빌드 도구 없음. `requirements.txt` 변경 없음.
+- 신규: `app/common/partials.py`(`render_screen`), `templates/{dashboard/_body,programs/_results,facilities/_workspace}.html`, `templates/components/busy.html`, `static/interactions.js`.
+- 전송량: 시설 2페이지 기준 25.0KB → 17.8KB. 프로그램 2페이지 22.3KB → 14.8KB.
+- 접근성: 스왑 후 `data-focus-key`로 포커스 복원(`preventScroll`), 조각마다 `role="status"` 안내, 모든 htmx 링크에 `href` 유지(무JS 폴백), `prefers-reduced-motion` 시 전환 제거.
+- 검증: Django check 정상, 테스트 **46개 통과**(기존 41 + 조각 계약 5), compileall 성공, `node --check` 통과. 실제 서버(127.0.0.1:8765)에서 정적 자산 3개 200, 조각 응답에 doctype·주 메뉴·htmx 스크립트·컨테이너 id가 없음을 확인.
+- 미실행: 브라우저 확장이 연결되지 않아 실제 화면에서의 스크롤·포커스 육안 확인은 사용자 몫으로 남는다. 서버 응답과 스왑 속성까지만 검증했다.
+
+## 최신 작업 — 모듈별 원본 재배치 (2026-09-14, 2차)
+
+`data/`가 CSV 4개로 정리되면서 세 모듈의 원본을 지정된 자료로 다시 붙였다. 근거와 기각한 대안은 [결정 기록](DECISIONS.md) 참조.
+
+| 모듈 | 원본 | 적재 |
+|---|---|---|
+| 대시보드 | 스포츠강좌이용권 이용현황 정보.csv | 원장 517,101행 → 시군구 단위 집계, 식별 불가 0행 |
+| 프로그램 | 공공체육시설 프로그램 정보.csv | 396,693행 → 중복 101,660행 제외 → 295,033건 / 시설 399개 |
+| 시설 | 전국공공체육시설 데이터.csv | 44,612행 → 삭제 표시 9,039행 제외 → 35,573건 |
+
+- 대시보드: 지표를 이용 시설 수·개설 강좌 수·신청인원 합계·관측 개설연월으로 교체. 지원대상·수급인원 원본이 삭제돼 수혜율은 "미연결"로 표기하고 다른 자료로 추정하지 않는다. 종목 집계가 선택 지역 범위와 일치하도록 바꿨다.
+- 프로그램: 대상·요일·시간·모집인원 필터가 원자료로 뒷받침되어 복원. 시설유형 선택 목록 추가, 정류장 도보 시간 기준 정렬 추가(기존 `nearest_stop_minutes`를 처음으로 연결). 레코드를 namedtuple로 바꿔 318MB → 80MB.
+- 시설: 업종 필터 추가, 상세에 보유주체·담당부서·면적·수용인원·홈페이지 표시. 강좌 연결을 프로그램 자료로 교체하고 4부 정확 키로 300개 시설을 연결(프로그램 행 90% 커버).
+- 엑셀: 5만 행 한도 신설. 초과 시 400으로 거절하고 화면에서도 버튼 대신 안내를 보여준다. 라우트 `export/facility-courses.xlsx` → `export/facility-programs.xlsx`.
+- 변경 파일: `app/common/{data,exports}.py`, `app/{dashboard,programs,facilities}/*.py`, `app/{models,services,views,tests}.py`, `main/templates/{dashboard,programs,facilities}/index.html`, `components/source_status.html`. `templates/facilities/courses.html` 삭제.
+- 검증: Django check 정상, 테스트 **41개 통과**, compileall 성공. 실제 자료로 `/`(302), `/dashboard`, 지역 필터, `/programs`, 2페이지, 복합 필터, `/facilities`, 2페이지, 시설 상세, 엑셀 3종 모두 200.
+- 콜드 로드(프로세스당 1회): 대시보드 4.8초, 프로그램 8.6초, 시설 0.5초. 이후 페이지 응답은 0.5초 이하.
+- 미해결: 지역명 대응표 부재로 화면 간 지역 연계 불가. 수강료 단위(월/회/과정) 미확인. `FCLTY_STATE_CD` 의미 미확인. 브라우저 캡처·실제 뷰포트 검증 미실행.
+
+## 최신 작업 — 프로그램 모듈 원본 전환 (2026-09-14)
+
+프로그램 모듈이 읽던 `청소년 유아동 이용가능 체육시설 프로그램 정보.csv`를 `스포츠강좌이용권 이용현황 정보.csv`로 바꿨다. 이제 대시보드·프로그램·시설 세 모듈이 같은 이용권 자료를 본다. 근거와 대안 검토는 [결정 기록](DECISIONS.md) 참조.
+
+- 적재: 원장 517,101행을 강좌 59,613건으로 집계. 기존 15,000행 선두 적재 → **전수 적재**. 식별 불가 제외 0건.
+- 강좌 식별: `(시도코드, 시군구코드, 시설명, 주소, 상세주소, COURSE_NO)`. 강좌번호 단독 충돌 658건을 시설 식별자로 분리.
+- 화면: 대상 필터 → 개설연월 필터, 종목 자유입력 → 33개 선택 목록, 정렬에 신청인원 합계 추가, 요약에 신청인원 합계 타일 추가, 비교표에 개설연월·신청인원 열 추가.
+- 엑셀: 19개 열로 확장(강좌번호·주소·시군구·최초/최근 개설연월·개설 월수·신청인원 합계·금액 변동 여부·출처 포함).
+- 미제공 보존: 대상·요일·시간 열이 원자료에 없어 추정하지 않고 '자료 미제공'으로 표기. 수강료는 최근 관측값 + 변동 여부, 단위는 여전히 미확인.
+- 공용화: 개설연월·날짜 정규화를 `app/common/data.py`로 이동해 시설 모듈과 공유. 메모이즈로 콜드 로드 20.2초 → 7.9초.
+- 변경 파일: `app/common/data.py`, `app/programs/{models,services,views,tests}.py`, `app/facilities/services.py`, `app/{models,services,tests}.py`, `main/templates/programs/index.html`.
+- 검증: Django check 정상, 테스트 **32개 통과**(기존 20개 → 신규 12개), compileall 성공. 실제 자료로 `/`(302), `/dashboard`, `/programs`, `/programs?page=2`, 지역·개설연월·정렬 조합, `/facilities` 모두 200, 엑셀 내보내기 200(0.3MB).
+- 미해결: 이용현황 파일을 프로그램·시설이 각각 파싱(중복 I/O). 브라우저 캡처·실제 뷰포트 검증 여전히 미실행.
+
+## 최신 작업 — 시안 전면 재구성 (2026-09-11)
+
+후속 사용자 요청에 따라 대시보드·프로그램·시설 화면 전체 디자인을 재구성했다. [시안 검토표](DESIGN-REVIEW.md) 참조.
+
+- 대시보드: 4개 아이콘 지표와 지도/지역차트/종목·참고지표의 3열 배치.
+- 프로그램: 좌측 조건 패널, 우측 요약 4개·TOP 3, 하단 분포 대체 목록과 비교표.
+- 시설: 상단 검색, 좌측 표, 우측 시설 기본정보와 연결강좌 상태.
+- 공통: 헤더·네이비 사이드바·SVG 아이콘·카드·버튼·표·하단 자료 안내, 단일 CSS 및 반응형 분기.
+- 동작: 20행 페이지 이동, 선택 시설·필터 보존, 프로그램 다운로드의 모든 적용조건 전달.
+- 변경 파일: `main/templates/base.html`, `dashboard.html`, `programs.html`, `facilities.html`, `components/icons.html`, `icon.html`, `pagination.html`, `main/static/app.css`, `app/views.py`, `app/tests.py`. `main/static/shell.css` 제거. 관련 문서 갱신.
+- 검증: Django check 정상, 단위·렌더링 테스트 **12개 통과**, Python compileall 성공. 실제 데이터로 3개 화면·프로그램 2페이지·시설 상세·시설 2페이지 모두 200.
+- 브라우저 확인: CUA의 apps/browsers가 빈 배열. 화면 캡처·실제 뷰포트·키보드 조작 검증 미실행.
+- 지도 자산·시설 사진·데이터 정규화·XLSX 등 앞서 기록한 의존성은 남아 있다. 아래 기록은 최초 00단계 작업 이력이다.
+
+작업일: 2026-09-11. 기준: 제공 ZIP의 AGENTS.md, CODEX-START.md, 00-bootstrap.md, docs/00~04, 색상 토큰과 시안. 기존 `_prompt`의 AGENTS.md, START.md, WORK-STATUS.md도 확인함.
+
+| 단계 | 상태 | 검증 및 남은 사항 |
+|---|---|---|
+| 00 공통 레이아웃 | 구현·서버 검증 완료 / 브라우저 검증 대기 | 3개 메뉴, 루트 이동, 자료 상태, 토큰, 반응형·포커스 스타일. 실제 뷰포트·키보드 검증 미실행 |
+| 01 데이터 | 기존 부분 구현 / 검증 필요 | CSV 11개 구조 점검 완료. 단위·기간·대상 정의·연계·안정 ID·전체 전처리 미완료 |
+| 02 대시보드 | 기존 부분 구현 / 검증 필요 | 기간·대상군 혼합 합계와 지역별 신청집계 일관성 확인 필요 |
+| 03 프로그램 | 기존 부분 구현 / 검증 필요 | 전체 적재, PROGRM_TY_NM 매핑, 단위별 정렬, 필터, 페이지, 시설 연계 필요 |
+| 04 시설 | 기존 부분 구현 / 검증 필요 | 안정 ID·중복 제거·장애인 자료 연결·강좌 연결·페이지 필요 |
+| 05 엑셀·지도 | 미완료 | 기존 CSV 방식. XLSX 전체 조회조건 일치, 행 보호한도, 행정경계 자산 필요 |
+| 06 최종 검수 | 미완료 | 브라우저·XLSX·전체 기능 인수 테스트는 단계 개발 후 수행 |
+
+## 변경 파일
+
+- `main/main/urls.py`: 루트 리다이렉트.
+- `main/templates/base.html`, `components/source_status.html`: 공통 메뉴·본문 바로가기·자료 상태.
+- `main/templates/dashboard.html`: 불필요한 닫는 태그 제거.
+- `main/templates/programs.html`: 표 스크롤 영역의 키보드 포커스·접근성 이름.
+- `main/static/app.css`, `shell.css`, `sport-insight-colors.css`: 반응형 문법 수정, 시스템 폰트, 토큰 적용, 공통 UI 크기·상태·포커스.
+- `app/tests.py`: 루트·메뉴·활성 상태·본문 포커스 타깃·자료 안내·표 접근성 테스트 추가.
+- `scripts/inspect_sources.py`, `docs/source-inventory.json`: 전체 CSV의 구조 메타데이터 점검.
+- `README.md`, `docs/DECISIONS.md`, 이 파일: 실행 및 검증 기록.
+- `_handoff/sport-insight-dev-handoff/*`: 사용자 ZIP 원문 추출. 기존 자료와 별도 보존.
+
+## 실행 및 결과
+
+| 명령 / 확인 | 결과 |
+|---|---|
+| `config/Scripts/python.exe main/manage.py check` | 문제 없음 |
+| `config/Scripts/python.exe main/manage.py test app -v 2` | 9개 통과: 기존 계산 6개 + 신규 공통 화면 3개 |
+| `config/Scripts/python.exe -m compileall -q app main/main scripts` | 성공 |
+| Django Client의 실제 데이터 요청 `/`, `/dashboard`, `/programs`, `/facilities` | 각각 302, 200, 200, 200 |
+| `config/Scripts/python.exe scripts/inspect_sources.py` | 최종 성공, 11파일. 최초 엄격 파서 오류를 확인하고 오류 메타데이터 보존 방식으로 보완 |
+| Git status/diff | git 실행 파일이 PATH에 없고 루트에 .git도 없음. 변경 전 소스를 직접 확인 |
+| TypeScript 검사·프런트 빌드 | 해당 스택·설정 없음. Django 검사와 Python 컴파일 수행 |
+| 브라우저 E2E·1440/1280/좁은 화면 캡처·실제 키보드 포커스 | 미실행: CUA 브라우저 연결 결과 `No browser is available`. 렌더링 테스트는 브라우저 검증을 대체하지 않음 |
+
+## 데이터 확인 결과
+
+모든 CSV를 UTF-8-SIG 파서로 읽음. 헤더·체크섬·행 수는 `source-inventory.json` 참조. 공공 프로그램 파일과 체육생활이용정보 파일이 바이트 단위 동일함. 엄격 따옴표 오류 4파일, 열 수 불일치는 강좌 데이터 3행 및 청소년·유아동 프로그램 266행. 원본은 변경하지 않음. 출처·가격 단위·기간·시설 crosswalk는 검증되지 않음.
+
+다음 단계는 `prompts/01-data-layer.md`의 데이터 계약·전처리·계산 검증이다. 이번 시작 프롬프트의 범위를 넘어 전체 MVP를 구현하지 않았으며 커밋·푸시·배포하지 않았다.

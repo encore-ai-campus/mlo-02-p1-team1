@@ -57,6 +57,10 @@ Hi스포링은 이 작업을 하나의 화면 흐름으로 연결합니다. **�
 
 ### 프로젝트 목표
 
+| 지역 현황 확인 | 프로그램 설계 | AI 검토 | 계획서 완성 |
+|:---:|:---:|:---:|:---:|
+| 지도·이용 실적 | 종목·시설·운영안 | 근거·보완 의견 | 인쇄·최근 목록 |
+
 - 지역별 이용 실적과 종목 분포를 조회해 프로그램 기획의 출발점을 제공합니다.
 - 기존 강좌와 시설을 검색·비교해 운영안을 구체화하도록 돕습니다.
 - AI 현황 해석과 프로그램 검토로 강점·위험요인·개선 제안을 확인합니다.
@@ -102,7 +106,17 @@ AI는 참고 의견을 제공하며 최종 기획과 운영 결정은 담당자�
 
 ### 시스템 아키텍처
 
+![스포링 전체 서비스 아키텍처](docs/readme-assets/architecture.png)
+
+[아키텍처 이미지 크게 보기](docs/readme-assets/architecture.png)
+
+> 파랑은 화면·정책 조회, 초록은 서버 처리, 보라는 CSV·캐시, 주황은 AI 연동을 나타냅니다. 첨부 도식의 작성일은 2026-09-25이며 아래 설명은 2026-09-28 프로젝트 개요를 기준으로 합니다. 예약 배치의 일요일 00시는 서버 설정 UTC 기준입니다.
+
+<details>
+<summary><strong>아키텍처 연결 흐름 자세히 보기</strong></summary>
+
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'sans-serif', 'fontSize': '16px', 'lineColor': '#526A87', 'primaryTextColor': '#19324F', 'background': '#F5F8FC'}}}%%
 flowchart TD
     Browser[사용자 브라우저: HTML / HTMX / fetch / ECharts]
     Web[Gunicorn / Django]
@@ -124,6 +138,14 @@ flowchart TD
     Gemini --> Result --> Service
     Service --> Browser
     Browser --> Local
+    classDef front fill:#EAF5FF,stroke:#148BDD,color:#19324F,stroke-width:2px
+    classDef backend fill:#E9F8F3,stroke:#0FA580,color:#19324F,stroke-width:2px
+    classDef data fill:#F2EDFF,stroke:#8562D9,color:#19324F,stroke-width:2px
+    classDef ai fill:#FFF2E4,stroke:#DB8121,color:#19324F,stroke-width:2px
+    class Browser,Local front
+    class Web,Gate,Views,Service backend
+    class Cache,CSV,Batch,Source data
+    class AI,Gemini,Result ai
 ```
 
 - 서버가 CSV를 읽고 집계한 HTML·JSON을 제공합니다. 브라우저가 원본 CSV를 직접 읽지 않습니다.
@@ -131,7 +153,12 @@ flowchart TD
 - 지역 AI 결과는 서버 파일 캐시, 프로그램 검토는 입력에 연결한 서명 토큰, 완성 계획서는 브라우저 스냅샷으로 구분합니다.
 - 운영 설정은 Gunicorn 1워커·gthread 4스레드·timeout 180초입니다. 메모리 캐시는 프로세스별로 독립적입니다.
 
+</details>
+
 ### 프로젝트 폴더 구조
+
+<details>
+<summary><strong>패키지별 역할과 전체 폴더 구조</strong></summary>
 
 ```text
 kspo/
@@ -171,6 +198,8 @@ kspo/
 ```
 
 **책임 분리:** View는 요청과 응답, Service는 업무 처리, Model/Repository는 CSV 접근, Template은 화면 표시를 담당합니다. 업무 `models.py`가 모두 Django ORM 테이블을 뜻하는 것은 아닙니다.
+
+</details>
 
 <a id="wbs"></a>
 ## 4. WBS
@@ -214,6 +243,7 @@ kspo/
 ### 프로그램 설계 흐름
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'sans-serif', 'fontSize': '16px', 'lineColor': '#526A87', 'primaryTextColor': '#19324F', 'background': '#F5F8FC'}}}%%
 flowchart LR
     A[STEP 01 지역 선택·조회] --> B[선택적 지역 AI 분석]
     A --> C[STEP 02 종목·시설 선택]
@@ -225,6 +255,13 @@ flowchart LR
     F --> H[계획서 완성]
     G --> H
     H --> I[인쇄·최근 5건 보관]
+    classDef front fill:#EAF5FF,stroke:#148BDD,color:#19324F,stroke-width:2px
+    classDef backend fill:#E9F8F3,stroke:#0FA580,color:#19324F,stroke-width:2px
+    classDef data fill:#F2EDFF,stroke:#8562D9,color:#19324F,stroke-width:2px
+    classDef ai fill:#FFF2E4,stroke:#DB8121,color:#19324F,stroke-width:2px
+    class A,C,D,I front
+    class H backend
+    class B,E,F,G ai
 ```
 
 1. **지역 선택:** 지도·행정구역에서 지역을 조회하고 이용 시설·강좌·신청 실적·종목 분포를 확인합니다.
@@ -254,6 +291,7 @@ flowchart LR
 ### AI 공급자 교체 구조
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'sans-serif', 'fontSize': '16px', 'lineColor': '#526A87', 'primaryTextColor': '#19324F', 'background': '#F5F8FC'}}}%%
 flowchart LR
     Task[지역·프로그램 업무 서비스] --> Req[AIRequest]
     Req --> Factory[공급자 팩토리]
@@ -264,6 +302,13 @@ flowchart LR
     Dummy --> Resp
     Resp --> Check[공통 응답 검증]
     Check --> Store[캐시·검토 토큰·계획서]
+    classDef front fill:#EAF5FF,stroke:#148BDD,color:#19324F,stroke-width:2px
+    classDef backend fill:#E9F8F3,stroke:#0FA580,color:#19324F,stroke-width:2px
+    classDef data fill:#F2EDFF,stroke:#8562D9,color:#19324F,stroke-width:2px
+    classDef ai fill:#FFF2E4,stroke:#DB8121,color:#19324F,stroke-width:2px
+    class Task,Factory,Check backend
+    class Req,Provider,Gemini,Dummy,Resp ai
+    class Store data
 ```
 
 현재 Gemini와 더미 공급자를 구현했습니다. GPT·Claude는 공급자 어댑터 구현과 팩토리 등록 후 사용할 수 있습니다. 설정값 변경만으로 미구현 공급자가 작동하거나 장애 시 다른 공급자로 자동 전환되지는 않습니다.
@@ -271,6 +316,7 @@ flowchart LR
 ### CSV 정제·사전 적재
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'sans-serif', 'fontSize': '16px', 'lineColor': '#526A87', 'primaryTextColor': '#19324F', 'background': '#F5F8FC'}}}%%
 flowchart LR
     A[원본 CSV 4종] --> B[필수 열·지역 코드 검사]
     B --> C[서울 추출·part 준비본 작성]
@@ -279,6 +325,11 @@ flowchart LR
     E --> F[manifest 발행]
     F --> G[세대 감지·재적재]
     G --> H[완료된 메모리 스냅샷 교체]
+    classDef front fill:#EAF5FF,stroke:#148BDD,color:#19324F,stroke-width:2px
+    classDef backend fill:#E9F8F3,stroke:#0FA580,color:#19324F,stroke-width:2px
+    classDef data fill:#F2EDFF,stroke:#8562D9,color:#19324F,stroke-width:2px
+    classDef ai fill:#FFF2E4,stroke:#DB8121,color:#19324F,stroke-width:2px
+    class A,B,C,D,E,F,G,H data
 ```
 
 - 실행 잠금으로 배치 중복 실행을 제한합니다.
@@ -289,7 +340,17 @@ flowchart LR
 
 ### 예외처리 구조
 
+![스포링 연결 흐름과 예외처리](docs/readme-assets/exception-handling.png)
+
+[예외처리 이미지 크게 보기](docs/readme-assets/exception-handling.png)
+
+> 도식의 01~06은 요청·캐시·배치·AI·정책·Excel의 연결 지점을 구분합니다. 장애가 난 구간을 안내하고 기존 정상 데이터와 가능한 기능을 유지하는 구조입니다. 모든 장애의 자동 복구를 의미하지 않습니다.
+
+<details>
+<summary><strong>계층별 처리 흐름과 예외처리 상세표</strong></summary>
+
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'sans-serif', 'fontSize': '16px', 'lineColor': '#526A87', 'primaryTextColor': '#19324F', 'background': '#F5F8FC'}}}%%
 flowchart TD
     UI[프론트엔드: 로딩·중복 요청·과거 응답 보호]
     Gate[진입 계층: CSV 준비 상태·응답 형식별 503]
@@ -301,6 +362,14 @@ flowchart TD
     Biz --> AI
     Biz --> Data
     Batch --> Data
+    classDef front fill:#EAF5FF,stroke:#148BDD,color:#19324F,stroke-width:2px
+    classDef backend fill:#E9F8F3,stroke:#0FA580,color:#19324F,stroke-width:2px
+    classDef data fill:#F2EDFF,stroke:#8562D9,color:#19324F,stroke-width:2px
+    classDef ai fill:#FFF2E4,stroke:#DB8121,color:#19324F,stroke-width:2px
+    class UI front
+    class Gate,Biz backend
+    class AI ai
+    class Data,Batch data
 ```
 
 | 계층 / 상황 | 처리 | 한계·후속 동작 |
@@ -323,6 +392,8 @@ flowchart TD
 **기동 대기 문제 개선:** Gunicorn master에서 CSV 갱신 스레드를 시작하면 fork 후 잠금·스레드 상태가 불일치할 수 있어, 워커 초기화 이후 적재와 스케줄러를 시작하도록 분리했습니다. 준비 상태와 PID별 `CSV_DIAG` 로그로 추적합니다.
 
 **AI 진단:** 요청 ID로 처리 단계·SDK 설정·응답 상태·오류 분류를 기록합니다. API 키·사용자 작성 내용·AI 응답 본문은 로그에 남기지 않습니다. 프로세스당 AI 분석은 1건으로 제한합니다.
+
+</details>
 
 <a id="results"></a>
 ## 8. 수행결과·테스트·시연 페이지
@@ -366,6 +437,9 @@ flowchart TD
 
 ### 실행 및 환경 설정
 
+<details>
+<summary><strong>로컬 실행 명령과 AI 환경변수</strong></summary>
+
 Python 가상환경에서 `main/requirements.txt`를 설치하고 원본 데이터를 준비합니다. 데이터 압축 해제·배치·운영 배포의 세부 절차는 [Render 배포 안내](docs/RENDER-DEPLOYMENT.md)를 참고합니다.
 
 ```powershell
@@ -388,6 +462,8 @@ AI_REVIEW_INCLUDE_TRANSIT=false
 ```
 
 외부 호출 없는 동작 확인에는 `AI_MODE=dummy`를 사용합니다. 더미 결과는 실제 AI 검토 성과와 구분합니다. Render에서는 같은 변수를 Environment에 등록하며 기존 OS·Render 환경변수가 `.env`보다 우선합니다. 실제 `.env`와 API 키는 Git에 포함하지 않습니다.
+
+</details>
 
 ### 현재 제약사항
 

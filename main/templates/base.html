@@ -1,0 +1,68 @@
+{% load static %}
+{% load assets %}
+{% load batch_tools %}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>스포링 · 공공 체육복지 현황</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="{% static 'image/favicon.png' %}">
+  <link rel="stylesheet" href="{% asset 'theme/sport-insight-colors.css' %}">
+  <link rel="stylesheet" href="{% asset 'fonts.css' %}">
+  <link rel="stylesheet" href="{% asset 'app.css' %}">
+  <script src="{% static 'vendor/htmx.min.js' %}" defer></script>
+  <script src="{% asset 'interactions.js' %}" defer></script>
+</head>
+<body class="page-{{ page }}" hx-history="false">
+  {% include 'components/icons.html' %}
+  <a class="skip-link" href="#main-content">본문 바로가기</a>
+  <header class="global-header">
+    <a class="global-brand" href="/dashboard"><span class="brand-mark" aria-hidden="true"><img class="icon" src="{% static 'image/logo/logo.png' %}" alt="" width="180" height="23"></span><span>체육복지 정책의사결정 지원 플랫폼</span></a>
+    <div class="global-meta">
+      <a class="button ghost policy-open" aria-haspopup="dialog" aria-controls="policy-dialog" href="{% url 'policies' %}" hx-get="{% url 'policies' %}" hx-target="#policy-dialog-body" hx-swap="innerHTML" hx-indicator="#policy-busy">{% include 'components/icon.html' with name='program' %}주요 정책 보기</a>
+    </div>
+  </header>
+  <aside class="sidebar">
+    <nav aria-label="주 메뉴">
+      <a class="nav-link {% if page == 'dashboard' %}active{% endif %}" {% if page == 'dashboard' %}aria-current="page"{% endif %} href="{% url 'dashboard' %}">{% include 'components/icon.html' with name='home' %} 프로그램 설계</a>
+      <a class="nav-link {% if page == 'programs' %}active{% endif %}" {% if page == 'programs' %}aria-current="page"{% endif %} href="{% url 'programs' %}">{% include 'components/icon.html' with name='program' %} 프로그램 현황</a>
+      <a class="nav-link {% if page == 'facilities' %}active{% endif %}" {% if page == 'facilities' %}aria-current="page"{% endif %} href="{% url 'facilities' %}">{% include 'components/icon.html' with name='building' %} 시설 현황</a>
+    </nav>
+    <div class="sidebar-tools">
+      {% include 'components/manual_control.html' %}
+      {# 아래 함수 호출을 주석 처리하면 배치 테스트 버튼과 모달이 표시되지 않는다. #}
+      {% show_batch_test_button %}
+      {% include 'components/overview_control.html' %}
+    </div>
+    <div class="sidebar-foot"><strong>스포링</strong><span>공공 체육복지 데이터</span><span>조회 · 비교 · 검토</span></div>
+  </aside>
+  <main id="main-content" class="main-content" tabindex="-1">
+    {% block content %}{% endblock %}
+  </main>
+  <div id="app-splash" class="app-splash" hidden>
+    <div class="app-splash-inner">
+      <img src="{% static 'image/logo/logo.png' %}" alt="" width="946" height="122">
+      <p id="app-splash-text" class="app-splash-text" role="status"></p>
+      <span class="app-splash-bar" aria-hidden="true"><i></i></span>
+    </div>
+  </div>
+  <dialog id="policy-dialog" class="policy-dialog" aria-labelledby="policy-dialog-title">
+    <div id="policy-dialog-body"></div>
+  </dialog>
+  <template id="policy-dialog-loading">
+    <section class="policy-loading" aria-busy="true">
+      <div class="policy-head">
+        <div class="policy-heading"><span class="policy-heading-icon" aria-hidden="true">{% include 'components/icon.html' with name='program' %}</span><div><p class="policy-eyebrow">체육정책 자료실</p><h2 id="policy-dialog-title">주요 정책 불러오기</h2></div></div>
+        <button type="button" class="policy-close" data-policy-loading-close aria-label="정책 목록 닫기"><span aria-hidden="true">×</span></button>
+      </div>
+      <div class="policy-loading-content" role="status" aria-live="polite">
+        <span class="policy-loading-spinner" aria-hidden="true"></span>
+        <strong>정보를 가져오는 중입니다.</strong>
+        <p>최신 체육정책 자료를 확인하고 있습니다. 잠시만 기다려 주세요.</p>
+        <span class="policy-loading-bar" aria-hidden="true"><i></i></span>
+      </div>
+    </section>
+  </template>
+</body>
+</html>
